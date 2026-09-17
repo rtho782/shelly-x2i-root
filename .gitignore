@@ -1,0 +1,14 @@
+.local/
+__pycache__/
+*.pyc
+.venv/
+*.apk
+*.img
+*.zip
+*.tar
+*.db
+*.png
+.env*
+*credentials*
+*token*
+adbkey*
