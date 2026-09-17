@@ -6,7 +6,7 @@ For our installation, the owner has chosen network containment rather than chang
 
 | Source | Destination | Policy |
 |---|---|---|
-| Home Assistant and one designated administration PC, on the main LAN | Inventoried panel ADB and HTTP(S) management ports | Allow |
+| Home Assistant and one designated administration PC, on the main LAN | Panel ADB, HTTP(S), SSH and panel-local MQTT ports | Allow |
 | Every other routed source | Those same panel management ports | Deny |
 | Other IoT clients | Panels directly within the IoT VLAN | Enforce client isolation at the wireless/switch layer |
 | Panels initiating dashboard, MQTT, DNS, time or camera connections | Their existing services | Preserve the existing policy; this management restriction is not an outbound lockdown |
@@ -21,11 +21,12 @@ The pinned ShellyElevate source listens on TCP 8080 and handles settings reads/w
 
 The current kiosk recipe explicitly enables Elevate's HTTP server. It remains unchanged by this documentation. Establish isolation before exposing that server or entering household credentials. If suitable isolation is unavailable, leave unnecessary management services disabled or select a different deployment approach.
 
-Inventory actual listeners rather than assuming that HTTP means only TCP 80. On the tested X2i, management uses TCP 5555 for ADB and TCP 8080 for Elevate. Other panels or applications may expose additional HTTP(S) management ports, including Fully remote administration if enabled. Do not enable a previously disabled service just to apply a firewall rule.
+Inventory actual listeners rather than assuming that HTTP means only TCP 80. On the tested X2i, management uses TCP 5555 for ADB and TCP 8080 for Elevate. The other Android panels also expose SSH and panel-local MQTT listeners, so the owner chose to include those in the same source allowlist. Restricting inbound access to a broker running on a panel is separate from a panel initiating a connection to Home Assistant's MQTT broker. Other panels or applications may expose additional HTTP(S) management ports, including Fully remote administration if enabled. Do not enable a previously disabled service just to apply a firewall rule.
 
 ## RouterOS implementation considerations
 
 - Back up the current configuration privately. Identify the real main-LAN and IoT interfaces, subnets, address reservations, IPv6 configuration and existing rule order before editing. Preserve router administration access and use a recoverable change procedure.
+- Inspect leases rather than assuming current addresses are reserved. Our panel leases were dynamic; the chosen procedure converts the existing leases to reservations at their current addresses after checking each IP/MAC identity, without forcing a renewal or reboot.
 - Use named address lists for the exact panel destinations and the two permitted management sources. Bind source permission to the appropriate ingress network as well as the source address. Do not allow the entire main LAN.
 - These are rules for traffic **forwarded to panels**, not router `input` rules. Keep the destination list and management ports narrow so unrelated IoT equipment and panel-initiated HA/MQTT/video connections are unaffected.
 - Ensure broad accept rules and FastTrack cannot bypass the new policy. FastTracked connections can remain outside normal filtering until they end; inspect and, where necessary, remove only the affected management connection entries. Do not flush the whole connection table or disable acceleration for unrelated traffic as a shortcut.
