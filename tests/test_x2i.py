@@ -402,7 +402,9 @@ class WorkflowTests(unittest.TestCase):
 
     def test_lite_setup_installs_fully_and_configures_supplied_url(self):
         elevate, launcher, fully = self.mock_setup('lite')
-        self.assertEqual([call.args[0] for call in self.tool.install.call_args_list], [elevate, launcher, fully])
+        # Windows runners may provide an 8.3 TEMP path; setup resolves the
+        # supplied APK to its canonical long path before validation/install.
+        self.assertEqual([call.args[0] for call in self.tool.install.call_args_list], [elevate, launcher, fully.resolve()])
         changes = {call.args[0]: call.args[2] for call in self.tool.prefs.call_args_list}
         self.assertTrue(changes[x.ELEVATE]['liteMode'])
         self.assertEqual(changes[x.FULLY]['startURL'], self.args.dashboard)
