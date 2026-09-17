@@ -28,6 +28,10 @@ The tested stock unit reported SELinux **Permissive**, `ro.adb.secure=0`, and an
 
 Keep ADB and ShellyElevate management interfaces on a trusted, restricted network. Do not expose them to the Internet. Treat a rooted, old-Android panel as a dedicated appliance, not a place to store valuable credentials. The toolkit does not configure your firewall or claim to harden unauthenticated network ADB.
 
+The pinned Elevate HTTP interface is unauthenticated, returns stored settings without secret redaction, and supports WebView JavaScript injection. The kiosk recipe enables this server. Our chosen deployment policy is IoT client isolation plus router restrictions permitting management only from Home Assistant and one administration PC; see [network containment](NETWORK-ISOLATION.md) for scope, limitations and verification. This is not a substitute for firmware security fixes, and other owners should make their own firmware/update and exposure decisions.
+
+The owner reports that wireless ADB needed manual enabling in Android Settings after the stock Shelly app was disabled. Neither `ro.adb.secure=0` nor successful USB/root access establishes that a TCP listener is enabled. The toolkit does not automatically enable wireless ADB.
+
 ## What the backups contain
 
 `.local/` may contain your serial, dashboard address, app preferences, ownership records, logs, APKs and boot images. Preferences can include secrets. Keep it private; `.gitignore` is a guardrail, not encryption. Do not paste entire logs into public issues.

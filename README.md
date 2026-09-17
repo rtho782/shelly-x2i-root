@@ -161,6 +161,10 @@ Full mode's setup path is covered by mock tests and the app's boot/watchdog beha
 
 Both profiles use fixed brightness 180, disable Elevate's screensaver/automatic brightness, voice assistant/wake and Bluetooth proxy, and enable its HTTP server. Review these preferences and network exposure for your own installation. Full mode refers to Elevate's foreground/WebView mode; it does not automatically enable every optional feature.
 
+**Management-network policy:** our chosen approach is an isolated IoT VLAN with client isolation and a router allowlist permitting only Home Assistant and one administration PC to reach panel ADB/HTTP management. The pinned Elevate API is unauthenticated and can expose sensitive settings and control the signed-in WebView. Establish suitable restrictions before enabling it or adding credentials. See [network containment, validation and firmware choices](docs/NETWORK-ISOLATION.md); the toolkit does not configure your router.
+
+**Wireless ADB is not assumed to be enabled.** After disabling the Shelly app, the owner had to enable it manually in Android Settings. USB ADB/root and network ADB are separate; this USB-only toolkit does not enable the network listener. Enable it only if needed and after restricting access.
+
 On Linux/macOS, omit `--fastboot` if it is on PATH and, for Lite mode, use your local Fully APK path. Host-side unit tests run on Windows/Linux; actual hardware testing was on Windows. Other hosts are not hardware-validated.
 
 The wizard asks for typed, serial-specific confirmations before preparation, flashing, and kiosk setup. There is deliberately **no unattended `--yes` mode**.
@@ -218,6 +222,7 @@ With `--block-updates`, Android's automatic-update preference is disabled and th
 
 - [Tested manual procedure and findings](docs/TESTED-PROCEDURE.md)
 - [Safety, limitations and recovery](docs/SAFETY.md)
+- [Network isolation, management access and firmware choices](docs/NETWORK-ISOLATION.md)
 - [Windows USB/fastboot troubleshooting](docs/WINDOWS-USB.md)
 - [Artifact provenance and hashes](docs/ARTIFACTS.md)
 - [Native navigation and Recents restoration](docs/NATIVE-NAVIGATION.md)
