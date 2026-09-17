@@ -14,7 +14,7 @@ Experimental, community-documented rooting and kiosk setup for the **Shelly Wall
 - Disabling the stock launcher and placeholder app **without uninstalling their APKs or clearing their data**.
 - Ultra Small Launcher as HOME, Fully Kiosk 1.57.1 opening the dashboard automatically, and ShellyElevate starting in the background.
 - An explicitly optional block on the identified stock firmware updater, including security updates.
-- Separately tested native Back/Home/Recents restoration with fullscreen reveal/auto-hide. This is a [manual SystemUI/Quickstep experiment](docs/NATIVE-NAVIGATION.md), **not a feature of the setup script**.
+- Separately tested native Back/Home/Recents restoration with fullscreen reveal/auto-hide. See [the navigation-bar fix below](#native-android-navigation-bar-fix); it is **not a feature of the setup script**.
 
 This is **not** a claim that every X2i sensor, relay, audio feature, or hardware service works. See [known limitations](docs/TESTED-PROCEDURE.md#known-limitations).
 
@@ -35,6 +35,72 @@ This is **not** a claim that every X2i sensor, relay, audio feature, or hardware
 | Android USB | VID 2207 / PID 0006, ADB |
 
 **The marketing firmware number alone is insufficient.** The script refuses other fingerprints, package build suffixes, architectures, and boot layouts. A future device sold with “2.7.4” may differ. Do not remove the checks to force it through.
+
+## Native Android navigation-bar fix
+
+The rooted test panel now has working **native Back, Home and Recents**, including swipe-up-to-reveal and automatic hiding in Fully. This restores Android's own SystemUI navigation/status bars and stock task switcher; it is not a floating-button app or accessibility overlay.
+
+**This is an optional, separately tested manual modification. `x2i.py` does not apply it.** Installing the launcher or completing the root/kiosk wizard does not, by itself, restore the navigation bar. The findings, patch source and required stock Quickstep APK are provided here, but there is no ready-made universal installer.
+
+### Why a launcher or navigation setting was not enough
+
+The Home launcher, navigation bar and Recents screen are different components. Ultra Small Launcher was already installed and selected correctly: an ADB Home key event opened it. What was missing was the on-screen way to reach it.
+
+Inspection of the tested Shelly SystemUI APK found that two methods had been reduced to stubs:
+
+```text
+NavigationBarFragment.create(...)       -> returns null
+StatusBarWindowController.attach()      -> returns immediately
+```
+
+Most of the surrounding Android code, buttons and layouts were still present, but these methods no longer created/attached the bars. Android already reported that navigation was enabled, with three-button mode selected and no active kiosk lock-task or status-bar restriction. Starting SystemUIService or using the vendor's show-navigation-bar broadcast could not repair the missing implementations.
+
+There was a second omission: the firmware pointed Recents at `com.android.launcher3/com.android.quickstep.RecentsActivity`, but the `com.android.launcher3` package was absent. Restoring the bar alone made Back/Home work while the square Recents button still lacked its task switcher.
+
+### What the restoration changes
+
+Two independent, removable Magisk modules address those omissions:
+
+1. **`shelly_native_navigation` — restore the native bars.** Two small AOSP-derived method replacements and an attach-listener helper restore the missing SystemUI implementation. The locally built APK changes only `classes.dex`; its original manifest, resources and other entry contents are preserved. Magisk presents it at the original `/system_ext/priv-app/SystemUI/SystemUI.apk` path without rewriting the system partition.
+2. **`shelly_stock_quickstep` — restore Recents.** The unmodified stock Android 11 Quickstep APK, extracted from Google's official default ARM64 image, supplies the missing task-switcher service. It is installed as a privileged system app through Magisk with the image's original app-specific permission XML.
+
+**Ultra Small Launcher remains the default Home app.** Quickstep supplies Recents in the background; it does not have to replace the chosen launcher. The existing Elevate/owner-removal/update-blocking module remains separate, and neither dashboard configuration nor Fully's preferences needed changing.
+
+### What has actually been tested
+
+On the original rooted X2i, including after a reboot:
+
+- Tapping native Back and Home from Android Settings works.
+- Tapping the square Recents button opens Android's task switcher; selecting Fully's preview returns to Fully.
+- Swiping up from the bottom in fullscreen Fully reveals the native bars, which subsequently auto-hide. This was checked on the physical panel as well as in post-reboot captures.
+- Root remains available and Ultra Small Launcher remains the default Home app. SystemUI stayed stable during the checks, with no fatal exception in the inspected AndroidRuntime log.
+
+The restored bar retains the vendor layout: **volume down, Back, Home, Recents, volume up**. The volume buttons were visible; audio behavior was not separately tested. This is button navigation with edge-swipe reveal, **not a claim that Android's full gesture-navigation mode has been validated**. Other firmware versions, multiple displays and long-term stability remain untested.
+
+### Included files and manual workflow
+
+- [SystemUI patch source and resource notes](docs/native-navigation/) — the two replacement methods and helper class, under Apache-2.0.
+- [Stock Quickstep APK](third_party/quickstep/Launcher3QuickStep.apk) and [permission XML](third_party/quickstep/com.android.launcher3.xml) — the unchanged components used in the successful test.
+- [Quickstep provenance, checksums and licence notices](third_party/quickstep/) — including the exact official image's licence evidence.
+- [Detailed manual procedure](docs/NATIVE-NAVIGATION.md) — build/repack requirements, temporary testing, module layout, validation and rollback.
+
+The procedure starts by backing up your own original SystemUI APK and confirming its exact SHA256:
+
+```text
+a9e2a829ad3f6b17176a16376a2dd9c5039c670daf40c7c7347298f79b121755
+```
+
+**Stop if it differs.** The patch's resource identifiers are specific to that APK; matching “2.7.4” on the screen is not enough. The original or patched Shelly SystemUI binary is not included because redistribution permission for the complete vendor-modified APK has not been established.
+
+At a high level, the successful sequence was: back up and hash-check the original; decode with APKTool without rebuilding resources; apply the three source assets; rebuild and repack only the changed DEX; verify and test a temporary SystemUI replacement with an armed timed rollback; then install the two separate Magisk modules and verify the behavior again after reboot. The [full guide](docs/NATIVE-NAVIGATION.md#reproduction-outline-for-experienced-android-developers) explains the necessary details. Downloading Quickstep alone does not repair Shelly's SystemUI.
+
+### Signing, safety and rollback
+
+The patched SystemUI retains the original APK signing block for the existing system package's certificate identity, but **its modified contents do not have a valid vendor signature**. It is not an ordinary APK update: do not use `adb install` / `pm install` or re-sign it with an arbitrary key. The tested approach relies on the exact rooted firmware's handling of a systemless replacement at the trusted system path; no global signature-verification bypass was installed. APKTool's intermediate output is not, on its own, the final payload.
+
+The first test was a temporary bind mount with a three-minute automatic rollback. After it worked, the persistent module added a bounded boot guard that checks for a stable SystemUI process and native navigation window; if those checks fail, it is designed to disable the two new modules and reboot. **Only the guard's successful path was observed; automatic recovery is not guaranteed.** Modifying SystemUI can still cause a UI crash loop or prevent usable boot. Keep USB ADB, an original backup and a recovery plan available.
+
+To undo the persistent restoration, disable **`shelly_native_navigation`** and **`shelly_stock_quickstep`** in Magisk and reboot. Leave **`shelly_elevate_system`** enabled to retain the existing Elevate/owner/OTA setup. Rebooting alone does not undo an enabled module. If the UI is unavailable but ADB/root still work, the [root-shell rollback commands](docs/NATIVE-NAVIGATION.md#rollback) provide the equivalent path without clearing app data or removing root.
 
 ## Requirements
 
@@ -75,7 +141,7 @@ Both modes install **Ultra Small Launcher** and set it as the default Android Ho
 
 Installing a launcher does not install Android's Back/Home/Recents bar or guarantee a swipe-to-reveal gesture on vendor firmware. The ordinary Home action can be tested with `adb -s YOUR_USB_SERIAL shell input keyevent 3`; fullscreen/navigation behavior is separate from the default Home selection.
 
-For the separately tested native restoration, see [Native Android navigation](docs/NATIVE-NAVIGATION.md). The documentation includes patch source and a licence-reviewed stock Quickstep APK; it does not change this wizard or supply a patched Shelly firmware APK.
+For the separately tested native restoration, see [the navigation-bar explanation above](#native-android-navigation-bar-fix) and the [detailed manual procedure](docs/NATIVE-NAVIGATION.md). It does not change this wizard or supply a patched Shelly firmware APK.
 
 **There is no default dashboard URL.** You must provide your own `--dashboard` URL. In Lite mode, Fully's `startURL` is exactly that argument; Elevate's `webviewUrl` is set to it in both modes. No household IP, private hostname, dashboard path or authentication is embedded. The `dashboard.example.invalid` address below is a non-working placeholder: replace it before running.
 
