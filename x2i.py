@@ -259,6 +259,7 @@ class Toolkit:
         print(json.dumps(info, indent=2))
         if strict:
             check_identity(info, self.args.serial)
+            require(info['sys.boot_completed'] == '1', 'Wait for Android to finish booting before this operation')
         return info
 
     def download(self, key):
@@ -374,18 +375,31 @@ class Toolkit:
     def root(self, command, **kwargs):
         return self.adb.shell('/debug_ramdisk/su -c ' + shlex.quote(command), **kwargs)
 
-    def wait_boot(self):
+    def wait_boot(self, previous=None):
         # Bounded individual checks; progress output instead of silent indefinite waits.
         for attempt in range(45):
             try:
                 if self.adb.shell('getprop sys.boot_completed', timeout=4)['out'].strip() == '1':
-                    return
+                    boot_id = self.adb.shell('cat /proc/sys/kernel/random/boot_id', timeout=4)['out'].strip()
+                    if boot_id and (previous is None or boot_id != previous):
+                        return
             except (OSError, EOFError, Stop):
                 pass
             if attempt % 10 == 0:
                 print('Waiting for Android boot; USB driver/power reconnection may be needed...', flush=True)
             time.sleep(2)
         raise Stop('Android not ready. Reconnect/cold-power-cycle if appropriate, then resume; do not reflash.')
+
+    def wait_kiosk(self):
+        # BOOT_COMPLETED can precede app receivers finishing startup. Do not launch
+        # apps to make a verification pass; wait for their own boot behavior.
+        for _ in range(15):
+            foreground = self.adb.shell('dumpsys activity activities | grep mResumedActivity', check=False)['out']
+            services = self.adb.shell('dumpsys activity services ' + ELEVATE)['out']
+            if 'de.ozerov.fully/.FullyActivity' in foreground and 'ServiceRecord{' in services:
+                return
+            time.sleep(2)
+        raise Stop('Kiosk apps did not start themselves within 30 seconds; inspect the panel and logs')
 
     def backup(self, remote, name):
         path = self.folder / name
@@ -484,9 +498,11 @@ class Toolkit:
             self.adb.shell('am start -W -n ' + package + '/.MainActivity', timeout=60)
         self.root('set -e; chown -R 0:0 ' + MOD + '; find ' + MOD + ' -type d -exec chmod 755 {} \\;; chcon -R u:object_r:system_file:s0 ' + MOD)
         self.state['module_staged'] = True
+        before = self.adb.shell('cat /proc/sys/kernel/random/boot_id')['out'].strip()
+        self.state['setup_before_boot_id'] = before
         self.save()
         self.adb.reboot()
-        self.wait_boot()
+        self.wait_boot(previous=before)
         self.finish()
 
     def finish(self):
@@ -511,7 +527,8 @@ class Toolkit:
         self.state['verification_before_boot_id'] = before
         self.save()
         self.adb.reboot()
-        self.wait_boot()
+        self.wait_boot(previous=before)
+        self.wait_kiosk()
         self.verify()
 
     def verify(self):
@@ -551,7 +568,7 @@ class Toolkit:
 
     def wizard(self):
         if self.state.get('module_staged'):
-            self.wait_boot()
+            self.wait_boot(previous=self.state.get('setup_before_boot_id'))
             if not self.state.get('complete'):
                 self.finish()
             else:

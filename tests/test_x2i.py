@@ -265,6 +265,34 @@ class WorkflowTests(unittest.TestCase):
         with self.assertRaises(x.Stop):
             x.Toolkit(self.args)
 
+    def test_wait_boot_rejects_old_completed_boot_until_id_changes(self):
+        self.tool.adb = Mock()
+        self.tool.adb.shell.side_effect = [
+            {'out': '1\n'}, {'out': 'old-boot\n'},
+            {'out': '1\n'}, {'out': 'new-boot\n'}]
+        with patch.object(x.time, 'sleep') as sleep:
+            self.tool.wait_boot(previous='old-boot')
+        self.assertEqual(self.tool.adb.shell.call_count, 4)
+        sleep.assert_called_once_with(2)
+
+    def test_kiosk_verification_wait_does_not_start_apps(self):
+        self.tool.adb = Mock()
+        self.tool.adb.shell.side_effect = [
+            {'out': 'FallbackHome'}, {'out': ''},
+            {'out': 'de.ozerov.fully/.FullyActivity'}, {'out': 'ServiceRecord{test}'}]
+        with patch.object(x.time, 'sleep'):
+            self.tool.wait_kiosk()
+        self.assertTrue(all(call.args[0].startswith('dumpsys ') for call in self.tool.adb.shell.call_args_list))
+
+    def test_confirmation_requires_interactive_stdin(self):
+        with patch.object(x.sys.stdin, 'isatty', return_value=False), patch('builtins.input') as prompt, self.assertRaises(x.Stop):
+            x.confirmed('FLASH', SERIAL)
+        prompt.assert_not_called()
+
+    def test_confirmation_refuses_wrong_serial(self):
+        with patch.object(x.sys.stdin, 'isatty', return_value=True), patch('builtins.input', return_value='FLASH ANOTHERUSB'), self.assertRaises(x.Stop):
+            x.confirmed('FLASH', SERIAL)
+
 
 if __name__ == '__main__':
     unittest.main()
