@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 .venv/
 *.apk
+# Exact, licence-reviewed AOSP binary; all other APKs remain ignored.
+!third_party/quickstep/Launcher3QuickStep.apk
 *.img
 *.zip
 *.tar

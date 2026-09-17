@@ -6,6 +6,14 @@ The original, individually executed procedure achieved persistent root, systemle
 
 ## Consolidated toolkit
 
+### Separate native-navigation hardware test
+
+On the same already-rooted original device, a later manual experiment restored the native navigation/status bars and added the missing stock Android 11 Quickstep Recents provider through two separate Magisk modules. On-screen Back/Home, the Recents task switcher and returning to Fully were checked; bottom-edge reveal and auto-hide in Fully were verified physically and by post-reboot captures. The modified SystemUI remained active after reboot, root still returned UID 0, Ultra Small Launcher remained default Home, and the checked AndroidRuntime log showed no fatal exception.
+
+This is one successful device test, not a fleet or fresh-device validation. The boot guard's successful path was observed; its failure path was not deliberately exercised. Details and rollback are in [Native navigation](NATIVE-NAVIGATION.md). The existing toolkit scripts and tests do not implement this feature and remain unchanged.
+
+### Script validation
+
 On 17 September 2026:
 
 - The standard-library unit suite passed locally on Windows/Python 3.12.

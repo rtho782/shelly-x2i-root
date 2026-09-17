@@ -1,0 +1,51 @@
+{
+  "component": "AOSP Launcher3QuickStep",
+  "package_name": "com.android.launcher3",
+  "version_name": "11",
+  "version_code": 30,
+  "min_sdk": 30,
+  "target_sdk": 30,
+  "source": {
+    "url": "https://dl.google.com/android/repository/sys-img/android/arm64-v8a-30_r02.zip",
+    "catalog_url": "https://dl.google.com/android/repository/sys-img/android/sys-img2-1.xml",
+    "catalog_sha1": "e96298145a5e0bfd6da4816f51b06c520d8dba72",
+    "sha256": "cb50112cf2dd234a71e2a29b0241c23dbb37dd5fc3156c68cc9c49d0f58ad304",
+    "extraction_chain": [
+      "arm64-v8a/system.img",
+      "1.super.img",
+      "system_ext.img"
+    ],
+    "tool": "7-Zip 25.01"
+  },
+  "files": [
+    {
+      "file": "Launcher3QuickStep.apk",
+      "image_path": "/system_ext/priv-app/Launcher3QuickStep/Launcher3QuickStep.apk",
+      "bytes": 8383535,
+      "sha256": "9b6fd0b6d5188bf2904c2419163fd440a95c6f181eeef9756e376aa8c05228e3",
+      "modified": false
+    },
+    {
+      "file": "com.android.launcher3.xml",
+      "image_path": "/system_ext/etc/permissions/com.android.launcher3.xml",
+      "sha256": "f949956d7950407a405e7f915c3214d123c7076c2f29b2c2d70dbb938b944298",
+      "modified": false
+    },
+    {
+      "file": "NOTICE.txt",
+      "sha256": "73404c00e81746763bdd55b71c9ee4f2458fd6fc2f2945a6731a40b5f98ef34a",
+      "transformation": "Relevant file-content entry extracted from the image notice XML; quote entities decoded and outer blank lines normalized. Licence and notice wording retained."
+    }
+  ],
+  "licensing": {
+    "license": "Apache-2.0",
+    "evidence_image_path": "/system_ext/etc/NOTICE.xml.gz",
+    "evidence_archive_sha256": "7ee8a581ebb70414a5bcee0e9d7267c17197e42535cb5347a6b8e6d05552af37",
+    "notice_content_id": "9645f39e9db895a4aa6e02cb57294595",
+    "upstream_terms": "https://developer.android.com/studio/terms",
+    "upstream_terms_section": "3.5",
+    "license_text": "NOTICE.txt",
+    "review_date": "2026-09-17"
+  },
+  "scope": "Unmodified public AOSP component only. Does not include or license Shelly firmware, modified SystemUI, SDK images or household data."
+}

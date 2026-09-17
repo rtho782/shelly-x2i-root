@@ -14,6 +14,7 @@ Experimental, community-documented rooting and kiosk setup for the **Shelly Wall
 - Disabling the stock launcher and placeholder app **without uninstalling their APKs or clearing their data**.
 - Ultra Small Launcher as HOME, Fully Kiosk 1.57.1 opening the dashboard automatically, and ShellyElevate starting in the background.
 - An explicitly optional block on the identified stock firmware updater, including security updates.
+- Separately tested native Back/Home/Recents restoration with fullscreen reveal/auto-hide. This is a [manual SystemUI/Quickstep experiment](docs/NATIVE-NAVIGATION.md), **not a feature of the setup script**.
 
 This is **not** a claim that every X2i sensor, relay, audio feature, or hardware service works. See [known limitations](docs/TESTED-PROCEDURE.md#known-limitations).
 
@@ -73,6 +74,8 @@ Read the risk statement first. Choose a display mode explicitly; neither mode is
 Both modes install **Ultra Small Launcher** and set it as the default Android Home app. The selected dashboard app opens over it; Home and the foreground dashboard are different things. The toolkit verifies the default Home selection immediately and after reboot. Retained stock device-owner policies may prevent or undo launcher selection; the tool stops instead of reporting success. `--remove-stock` remains an explicit opt-in.
 
 Installing a launcher does not install Android's Back/Home/Recents bar or guarantee a swipe-to-reveal gesture on vendor firmware. The ordinary Home action can be tested with `adb -s YOUR_USB_SERIAL shell input keyevent 3`; fullscreen/navigation behavior is separate from the default Home selection.
+
+For the separately tested native restoration, see [Native Android navigation](docs/NATIVE-NAVIGATION.md). The documentation includes patch source and a licence-reviewed stock Quickstep APK; it does not change this wizard or supply a patched Shelly firmware APK.
 
 **There is no default dashboard URL.** You must provide your own `--dashboard` URL. In Lite mode, Fully's `startURL` is exactly that argument; Elevate's `webviewUrl` is set to it in both modes. No household IP, private hostname, dashboard path or authentication is embedded. The `dashboard.example.invalid` address below is a non-working placeholder: replace it before running.
 
@@ -151,6 +154,7 @@ With `--block-updates`, Android's automatic-update preference is disabled and th
 - [Safety, limitations and recovery](docs/SAFETY.md)
 - [Windows USB/fastboot troubleshooting](docs/WINDOWS-USB.md)
 - [Artifact provenance and hashes](docs/ARTIFACTS.md)
+- [Native navigation and Recents restoration](docs/NATIVE-NAVIGATION.md)
 - [Contribution and validation rules](CONTRIBUTING.md)
 
 ```powershell
@@ -160,10 +164,10 @@ python -m py_compile x2i.py
 
 Tests use synthetic/mock devices; they do not flash or modify hardware. Inspection/verification on an already-rooted unit does not validate the fresh-device wizard. Do not describe the latter as fully tested until a new-device run is recorded.
 
-Never commit `.local/`, backups, APKs, boot images, screenshots, device serials, MACs, private IPs, dashboard configs, MQTT passwords or HA tokens. This repository intentionally distributes only our wrapper code, small original module files, documentation and tests.
+Never commit `.local/`, backups, device-derived APKs, boot images, screenshots, device serials, MACs, private IPs, dashboard configs, MQTT passwords or HA tokens. The sole binary exception is the explicitly licence-reviewed, unmodified [AOSP Quickstep APK](third_party/quickstep/) extracted from an official public image, with provenance and notices. No household device dump or patched vendor SystemUI is distributed.
 
 ## Credits and licence
 
 This work depends on [Magisk](https://github.com/topjohnwu/Magisk), [ShellyElevate](https://github.com/RapierXbox/ShellyElevate), Android Platform Tools, Shelly's published vendor image, Fully Kiosk, and [Ultra Small Launcher](https://blakadder.com/nspanel-pro-sideload/#install-a-launcher). They retain their own licences and ownership. No endorsement by these projects or Shelly is implied.
 
-Original toolkit code and documentation: [MIT](LICENSE). No third-party firmware/APK is relicensed or mirrored here. Downloaded scripts/binaries remain under their respective upstream terms.
+Original toolkit code and documentation: [MIT](LICENSE). The supplied [Quickstep component](third_party/quickstep/) and [AOSP-derived navigation patch snippets](docs/native-navigation/) retain their Apache-2.0 terms and notices; they are not relicensed under MIT. Other downloaded scripts/binaries remain under their upstream terms. No vendor firmware or modified Shelly APK is mirrored here.
