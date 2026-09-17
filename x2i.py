@@ -29,6 +29,8 @@ BOOT_SIZE = 0x2800000
 VENDOR_BOOT_SHA = '5c9635d64717462a9a595ac5527dd9ade6e23864b6f7e2df735636b685635a81'
 FULLY_SHA = '7867b11e830286eb3f9c4521305603f4225f003e49ea27908eb2e18454125368'
 ELEVATE = 'me.rapierxbox.shellyelevatev2'
+FULLY = 'de.ozerov.fully'
+HOME = 'l.l/l.l'
 STOCK = 'cloud.shelly.stargate'
 MOD = '/data/adb/modules/shelly_x2i_toolkit'
 TMP = '/data/local/tmp/shelly-x2i-toolkit'
@@ -227,6 +229,39 @@ def is_privileged(package_dump):
     return bool(flags and private and 'SYSTEM' in flags.group(1).split() and 'PRIVILEGED' in private.group(1).split())
 
 
+def validate_options(args):
+    serial_value(args.serial)
+    if args.dashboard:
+        dashboard_value(args.dashboard)
+    if args.kiosk:
+        require(args.elevate_mode in ('lite', 'full'), '--kiosk requires an explicit --elevate-mode lite or full')
+        require(bool(args.dashboard), '--kiosk requires your own --dashboard URL; there is no default')
+        if args.elevate_mode == 'lite':
+            require(bool(args.fully_apk), 'Lite mode requires --fully-apk for the Fully display recipe')
+        else:
+            require(not args.fully_apk, 'Full mode uses Elevate to display the dashboard; omit --fully-apk')
+    else:
+        require(not args.elevate_mode, '--elevate-mode requires --kiosk')
+    require(args.command != 'setup' or args.kiosk, 'Setup requires --kiosk and its explicit display options')
+    require(not (args.remove_stock or args.block_updates) or args.kiosk, 'Policy changes require the explicit --kiosk setup')
+
+
+def kiosk_preferences(mode, dashboard):
+    require(mode in ('lite', 'full'), 'Unknown Elevate mode')
+    dashboard_value(dashboard)
+    profiles = {ELEVATE: ('ShellyElevateV2.xml', {
+        'liteMode': mode == 'lite', 'settingEverShown': True, 'httpServer': True,
+        'screenSaver': False, 'automaticBrightness': False, 'brightness': 180, 'webviewUrl': dashboard,
+        'voiceAssistantEnabled': False, 'voiceWakeEnabled': False, 'bluetoothProxyEnabled': False,
+        'switchOnSwipe': False, 'powerButtonAutoReboot': False})}
+    if mode == 'lite':
+        profiles[FULLY] = ('de.ozerov.fully_preferences.xml', {
+            'startURL': dashboard, 'launchOnBoot': True, 'keepScreenOn': True,
+            'showActionBar': False, 'showStatusBar': False, 'showNavigationBar': False,
+            'kioskMode': False, 'remoteAdmin': False})
+    return profiles
+
+
 class Toolkit:
     def __init__(self, args):
         self.args, self.adb = args, ADB(args.serial)
@@ -235,6 +270,24 @@ class Toolkit:
         self.state_path = self.folder / 'state.json'
         self.state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {'serial': args.serial}
         require(self.state.get('serial') == args.serial, 'State belongs to a different device')
+
+    def elevate_mode(self):
+        saved = self.state.get('elevate_mode')
+        # Releases before mode selection only configured Lite + Fully. Preserve
+        # that meaning when resuming their saved state without the new field.
+        if saved is None and (self.state.get('setup_started') or self.state.get('module_staged')):
+            saved = 'lite'
+        requested = self.args.elevate_mode
+        require(not (saved and requested and saved != requested),
+                'Requested mode differs from saved setup; resume without new options. This is not a mode-switch tool.')
+        mode = saved or requested
+        require(mode in ('lite', 'full'), 'No display mode selected or saved')
+        return mode
+
+    def kiosk_activity(self, launch=False):
+        if self.elevate_mode() == 'full':
+            return ELEVATE + '/.MainActivity'
+        return FULLY + ('/.MainActivity' if launch else '/.FullyActivity')
 
     def save(self):
         temporary = self.state_path.with_suffix('.new')
@@ -393,10 +446,11 @@ class Toolkit:
     def wait_kiosk(self):
         # BOOT_COMPLETED can precede app receivers finishing startup. Do not launch
         # apps to make a verification pass; wait for their own boot behavior.
+        activity = self.kiosk_activity()
         for _ in range(15):
             foreground = self.adb.shell('dumpsys activity activities | grep mResumedActivity', check=False)['out']
             services = self.adb.shell('dumpsys activity services ' + ELEVATE)['out']
-            if 'de.ozerov.fully/.FullyActivity' in foreground and 'ServiceRecord{' in services:
+            if activity in foreground and 'ServiceRecord{' in services:
                 return
             time.sleep(2)
         raise Stop('Kiosk apps did not start themselves within 30 seconds; inspect the panel and logs')
@@ -437,15 +491,26 @@ class Toolkit:
         self.root('set -e; mkdir -p ' + parent + '; chown ' + uid + ':' + uid + ' ' + parent + '; chmod 771 ' + parent + '; cp ' + TMP + '/preferences.tmp ' + remote + '; chown ' + uid + ':' + uid + ' ' + remote + '; chmod 660 ' + remote + '; restorecon -R ' + parent)
 
     def setup(self):
+        validate_options(self.args)
+        require(self.args.kiosk, 'Setup needs --kiosk and its explicit display options. MQTT/HA login remain manual.')
+        mode = self.elevate_mode()
+        profiles = kiosk_preferences(mode, self.args.dashboard)
         self.inspect(strict=True)
         require('uid=0(root)' in self.root('id')['out'], 'Root is not available; approve the Magisk shell prompt if shown')
-        require(self.args.kiosk and self.args.dashboard and self.args.fully_apk, 'Setup needs --kiosk, --dashboard and --fully-apk. MQTT/HA login remain manual.')
         require(not self.state.get('setup_started'), 'Setup already started; use finish to resume after reboot, or inspect logs. Do not overwrite the module blindly.')
-        fully = Path(self.args.fully_apk).resolve()
-        require(fully.is_file() and sha(fully) == FULLY_SHA, 'Only the pinned Fully 1.57.1 APK is supported by this preference recipe')
+        fully = None
+        existing_fully = False
+        if mode == 'lite':
+            fully = Path(self.args.fully_apk).resolve()
+            require(fully.is_file() and sha(fully) == FULLY_SHA, 'Only the pinned Fully 1.57.1 APK is supported by this preference recipe')
+        else:
+            existing_fully = ('package:' + FULLY) in self.adb.shell('pm list packages --user 0 ' + FULLY)['out'].splitlines()
         require(self.root('test ! -e ' + MOD, check=False)['code'] == 0, 'Toolkit module already exists; refusing replacement')
         require(self.root('test ! -e /system/priv-app/ShellyElevateV2', check=False)['code'] == 0, 'Another system-app promotion exists; do not layer modules')
         print('Setup installs signed apps, backs up selected files, grants declared app permissions, and reboots.')
+        print('Elevate mode:', mode, '| Dashboard display:', 'Fully Kiosk' if mode == 'lite' else 'ShellyElevate WebView')
+        if existing_fully:
+            print('Existing Fully: back up preferences and disable launchOnBoot to avoid competing displays; preserve its URL/data.')
         print('Remove factory ownership/disable stock apps:', self.args.remove_stock, '| Block stock OTA/security updates:', self.args.block_updates)
         confirmed('SETUP', self.args.serial)
         if self.args.remove_stock:
@@ -471,16 +536,13 @@ class Toolkit:
             self.upload_root(path.read_bytes(), '/data/adb/magisk/' + path.name, '755')
         self.root('chmod 700 /data/adb; export MAGISKBIN=/data/adb/magisk MAGISKTMP=/debug_ramdisk; . /data/adb/magisk/app_functions.sh; env_check "30.7" 30700')
         elevate, launcher = self.download('elevate'), self.download('launcher')
-        for path in (elevate, launcher, fully):
+        for path in [elevate, launcher] + ([fully] if fully else []):
             self.install(path)
-        self.prefs(ELEVATE, 'ShellyElevateV2.xml', {'liteMode': True, 'settingEverShown': True, 'httpServer': True,
-                   'screenSaver': False, 'automaticBrightness': False, 'brightness': 180, 'webviewUrl': self.args.dashboard,
-                   'voiceAssistantEnabled': False, 'voiceWakeEnabled': False, 'bluetoothProxyEnabled': False,
-                   'switchOnSwipe': False, 'powerButtonAutoReboot': False})
-        self.prefs('de.ozerov.fully', 'de.ozerov.fully_preferences.xml', {'startURL': self.args.dashboard,
-                   'launchOnBoot': True, 'keepScreenOn': True, 'showActionBar': False, 'showStatusBar': False,
-                   'showNavigationBar': False, 'kioskMode': False, 'remoteAdmin': False})
-        self.state.update(setup_started=True, remove_stock=self.args.remove_stock, block_updates=self.args.block_updates)
+        for package, (filename, changes) in profiles.items():
+            self.prefs(package, filename, changes)
+        if existing_fully:
+            self.prefs(FULLY, 'de.ozerov.fully_preferences.xml', {'launchOnBoot': False})
+        self.state.update(setup_started=True, elevate_mode=mode, remove_stock=self.args.remove_stock, block_updates=self.args.block_updates)
         self.save()
         self.upload_root(b'id=shelly_x2i_toolkit\nname=Shelly X2i local-control setup\nversion=0.1\nversionCode=1\nauthor=Local device owner\ndescription=Opt-in systemless app promotion, factory-owner override and stock update guard.\n', MOD + '/module.prop')
         self.upload_root(elevate.read_bytes(), MOD + '/system/priv-app/ShellyElevateV2/ShellyElevateV2.apk')
@@ -492,7 +554,7 @@ class Toolkit:
         if self.args.block_updates:
             self.upload_root((ROOT / 'module/check_stargate_update.sh').read_bytes(), MOD + '/system/bin/check_stargate_update.sh', '755')
             self.adb.shell('settings put global ota_disable_automatic_update 1')
-        for package in (ELEVATE, 'de.ozerov.fully'):
+        for package in profiles:
             self.adb.shell('appops set ' + package + ' WRITE_SETTINGS allow')
             self.adb.shell('dumpsys deviceidle whitelist +' + package)
             self.adb.shell('am start -W -n ' + package + '/.MainActivity', timeout=60)
@@ -507,6 +569,7 @@ class Toolkit:
 
     def finish(self):
         require(self.state.get('module_staged'), 'Setup did not finish staging its module; review logs before making further changes')
+        activity = self.kiosk_activity(launch=True)
         self.inspect(strict=True)
         require('uid=0(root)' in self.root('id')['out'], 'Root did not survive')
         package = self.adb.shell('dumpsys package ' + ELEVATE)['out']
@@ -521,8 +584,10 @@ class Toolkit:
             self.adb.shell('am force-stop com.android.managedprovisioning')
             if self.adb.shell('settings get global device_provisioned')['out'].strip() != '1':
                 self.adb.shell('am start -W -n com.android.provision/.DefaultActivity')
-            self.root('cmd package set-home-activity --user 0 l.l/l.l')
-        self.adb.shell('am start -W -n de.ozerov.fully/.MainActivity')
+        self.root('cmd package set-home-activity --user 0 ' + HOME)
+        home = self.adb.shell('cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME')['out']
+        require(HOME in home.splitlines(), 'Default HOME was not set to Ultra Small Launcher; check stock device-owner restrictions')
+        self.adb.shell('am start -W -n ' + activity)
         before = self.adb.shell('cat /proc/sys/kernel/random/boot_id')['out'].strip()
         self.state['verification_before_boot_id'] = before
         self.save()
@@ -546,12 +611,13 @@ class Toolkit:
         if self.state.get('module_staged'):
             pkg = self.adb.shell('dumpsys package ' + ELEVATE)['out']
             require(is_privileged(pkg), 'Privileged system app missing')
-            require('de.ozerov.fully/.FullyActivity' in checks['foreground']['out'], 'Fully is not foreground; inspect the panel, do not declare startup success')
+            require(self.kiosk_activity() in checks['foreground']['out'], 'Selected dashboard app is not foreground; inspect the panel, do not declare startup success')
             require('ServiceRecord{' in checks['services']['out'], 'Elevate service not running')
+            require(HOME in checks['home']['out'].splitlines(), 'Unexpected HOME launcher after reboot')
+            require(self.adb.shell('pm path l.l')['out'].strip().startswith('package:'), 'Ultra Small Launcher is not installed')
             if self.state.get('remove_stock'):
                 require('Device Owner:' not in checks['policy']['out'], 'Factory device owner returned')
                 require(all('package:' + pkg in checks['disabled']['out'] for pkg in (STOCK, 'cloud.shelly.placeholder')), 'Stock app not disabled')
-                require('l.l/l.l' in checks['home']['out'], 'Unexpected HOME launcher')
             if self.state.get('block_updates'):
                 guard = self.root('cat /system/bin/check_stargate_update.sh')['out']
                 require('ShellyRootGuard' in guard, 'Firmware guard not mounted')
@@ -568,6 +634,7 @@ class Toolkit:
 
     def wizard(self):
         if self.state.get('module_staged'):
+            self.elevate_mode()  # Refuse a conflicting mode before any resume writes.
             self.wait_boot(previous=self.state.get('setup_before_boot_id'))
             if not self.state.get('complete'):
                 self.finish()
@@ -591,9 +658,10 @@ def parser():
     p.add_argument('--serial', required=True, help='Physical USB serial (never an IP address)')
     p.add_argument('--fastboot', default='fastboot', help='Path to official platform-tools fastboot')
     p.add_argument('--allow-no-stock-backup', action='store_true', help='Explicitly accept the lack of an exact original boot backup')
-    p.add_argument('--kiosk', action='store_true', help='Install/promote Elevate and configure Fully (manual MQTT/HA sign-in)')
+    p.add_argument('--kiosk', action='store_true', help='Install/promote Elevate and configure the chosen display mode (manual MQTT/HA sign-in)')
+    p.add_argument('--elevate-mode', choices=['lite', 'full'], help='Required with --kiosk: lite uses Fully; full uses Elevate WebView. No default.')
     p.add_argument('--fully-apk', help='Locally downloaded official Fully Kiosk 1.57.1 APK')
-    p.add_argument('--dashboard', help='Your dashboard URL, without credentials/tokens')
+    p.add_argument('--dashboard', help='Your own dashboard URL, without credentials/tokens. No default.')
     p.add_argument('--remove-stock', action='store_true', help='Block factory owner assignment and disable stock Shelly apps')
     p.add_argument('--block-updates', action='store_true', help='Block identified stock firmware updater, INCLUDING security updates')
     return p
@@ -602,12 +670,7 @@ def parser():
 def main():
     args = parser().parse_args()
     try:
-        serial_value(args.serial)
-        if args.dashboard:
-            dashboard_value(args.dashboard)
-        if args.kiosk:
-            require(bool(args.dashboard and args.fully_apk), '--kiosk requires --dashboard and --fully-apk')
-        require(not (args.remove_stock or args.block_updates) or args.kiosk, 'Policy changes require the explicit --kiosk setup')
+        validate_options(args)
         toolkit = Toolkit(args)
         getattr(toolkit, args.command)()
     except (Stop, OSError, EOFError, ValueError, ET.ParseError, subprocess.TimeoutExpired) as exc:

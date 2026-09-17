@@ -1,5 +1,3 @@
-import argparse
-import copy
 import importlib.util
 from pathlib import Path
 import struct
@@ -39,7 +37,7 @@ class ValidationTests(unittest.TestCase):
                 x.serial_value(bad)
 
     def test_dashboard_no_embedded_credentials_or_tokens(self):
-        self.assertEqual(x.dashboard_value('http://homeassistant.local:8123/lovelace/0'), 'http://homeassistant.local:8123/lovelace/0')
+        self.assertEqual(x.dashboard_value('https://dashboard.example.invalid/'), 'https://dashboard.example.invalid/')
         for bad in ['file:///data', 'https://user:secret@example.invalid/', 'https://example.invalid/?token=test',
                     'https://example.invalid/#credential', 'http://', 'javascript:alert(1)']:
             with self.subTest(bad=bad), self.assertRaises(x.Stop):
@@ -79,6 +77,64 @@ class ValidationTests(unittest.TestCase):
         result = subprocess.run([sys.executable, '-O', '-c', code], capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b'Use a physical USB serial', result.stderr)
+
+
+class DisplayOptionsTests(unittest.TestCase):
+    def args(self, *options):
+        return x.parser().parse_args(['setup', '--serial', SERIAL, '--kiosk', *options])
+
+    def test_no_default_url_or_display_mode(self):
+        args = x.parser().parse_args(['--serial', SERIAL])
+        x.validate_options(args)
+        self.assertIsNone(args.dashboard)
+        self.assertIsNone(args.elevate_mode)
+        self.assertIsNone(args.fully_apk)
+
+    def test_kiosk_requires_explicit_mode(self):
+        with self.assertRaisesRegex(x.Stop, 'explicit --elevate-mode'):
+            x.validate_options(self.args('--dashboard', 'https://example.invalid/', '--fully-apk', 'local.apk'))
+
+    def test_both_modes_require_own_url(self):
+        for mode in ('lite', 'full'):
+            with self.subTest(mode=mode), self.assertRaisesRegex(x.Stop, 'own --dashboard'):
+                x.validate_options(self.args('--elevate-mode', mode))
+
+    def test_lite_requires_fully_apk(self):
+        args = self.args('--elevate-mode', 'lite', '--dashboard', 'https://example.invalid/')
+        with self.assertRaisesRegex(x.Stop, '--fully-apk'):
+            x.validate_options(args)
+        args.fully_apk = 'local.apk'
+        x.validate_options(args)
+
+    def test_full_uses_no_fully_apk(self):
+        args = self.args('--elevate-mode', 'full', '--dashboard', 'https://example.invalid/')
+        x.validate_options(args)
+        args.fully_apk = 'local.apk'
+        with self.assertRaisesRegex(x.Stop, 'omit --fully-apk'):
+            x.validate_options(args)
+
+    def test_mode_requires_kiosk(self):
+        args = x.parser().parse_args(['--serial', SERIAL, '--elevate-mode', 'full'])
+        with self.assertRaisesRegex(x.Stop, '--elevate-mode requires --kiosk'):
+            x.validate_options(args)
+
+    def test_setup_requires_display_options(self):
+        args = x.parser().parse_args(['setup', '--serial', SERIAL])
+        with self.assertRaisesRegex(x.Stop, 'Setup requires --kiosk'):
+            x.validate_options(args)
+
+    def test_profiles_use_only_supplied_url(self):
+        for mode in ('lite', 'full'):
+            for url in ('https://first.example.invalid/dashboard', 'http://second.example.invalid:8123/custom'):
+                with self.subTest(mode=mode, url=url):
+                    profiles = x.kiosk_preferences(mode, url)
+                    self.assertEqual(profiles[x.ELEVATE][1]['webviewUrl'], url)
+                    self.assertEqual(profiles[x.ELEVATE][1]['liteMode'], mode == 'lite')
+                    if mode == 'lite':
+                        self.assertEqual(profiles[x.FULLY][1]['startURL'], url)
+                        self.assertTrue(profiles[x.FULLY][1]['launchOnBoot'])
+                    else:
+                        self.assertNotIn(x.FULLY, profiles)
 
 
 class FileTests(unittest.TestCase):
@@ -162,8 +218,7 @@ class WorkflowTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root_patch = patch.object(x, 'ROOT', Path(self.tmp.name))
         self.root_patch.start()
-        self.args = argparse.Namespace(serial=SERIAL, fastboot='fastboot', allow_no_stock_backup=True,
-                                       kiosk=False, dashboard=None, fully_apk=None, remove_stock=False, block_updates=False)
+        self.args = x.parser().parse_args(['--serial', SERIAL, '--allow-no-stock-backup'])
         self.tool = x.Toolkit(self.args)
 
     def tearDown(self):
@@ -276,6 +331,7 @@ class WorkflowTests(unittest.TestCase):
         sleep.assert_called_once_with(2)
 
     def test_kiosk_verification_wait_does_not_start_apps(self):
+        self.tool.state['module_staged'] = True  # Legacy state means Lite/Fully.
         self.tool.adb = Mock()
         self.tool.adb.shell.side_effect = [
             {'out': 'FallbackHome'}, {'out': ''},
@@ -283,6 +339,165 @@ class WorkflowTests(unittest.TestCase):
         with patch.object(x.time, 'sleep'):
             self.tool.wait_kiosk()
         self.assertTrue(all(call.args[0].startswith('dumpsys ') for call in self.tool.adb.shell.call_args_list))
+
+    def test_full_wait_requires_elevate_not_fully_foreground(self):
+        self.tool.state.update(module_staged=True, elevate_mode='full')
+        self.tool.adb = Mock()
+        self.tool.adb.shell.side_effect = [
+            {'out': x.FULLY + '/.FullyActivity'}, {'out': 'ServiceRecord{test}'},
+            {'out': x.ELEVATE + '/.MainActivity'}, {'out': 'ServiceRecord{test}'}]
+        with patch.object(x.time, 'sleep') as sleep:
+            self.tool.wait_kiosk()
+        sleep.assert_called_once_with(2)
+        self.assertTrue(all(call.args[0].startswith('dumpsys ') for call in self.tool.adb.shell.call_args_list))
+
+    def test_resume_uses_saved_mode_without_cli_selection(self):
+        self.tool.state.update(module_staged=True, elevate_mode='full')
+        self.assertEqual(self.tool.kiosk_activity(launch=True), x.ELEVATE + '/.MainActivity')
+        self.assertEqual(self.tool.kiosk_activity(), x.ELEVATE + '/.MainActivity')
+
+    def test_legacy_state_retains_lite_mode(self):
+        self.tool.state.update(module_staged=True)
+        self.assertEqual(self.tool.kiosk_activity(launch=True), x.FULLY + '/.MainActivity')
+        self.assertEqual(self.tool.kiosk_activity(), x.FULLY + '/.FullyActivity')
+
+    def test_conflicting_resume_mode_stops_before_device_access(self):
+        for saved in ({'elevate_mode': 'full'}, {}):
+            with self.subTest(saved=saved):
+                self.tool.state = {'serial': SERIAL, 'module_staged': True, **saved}
+                self.args.elevate_mode = 'lite' if saved else 'full'
+                self.tool.wait_boot, self.tool.finish = Mock(), Mock()
+                with self.assertRaisesRegex(x.Stop, 'differs from saved setup'):
+                    self.tool.wizard()
+                self.tool.wait_boot.assert_not_called()
+                self.tool.finish.assert_not_called()
+
+    def mock_setup(self, mode, existing_fully=False):
+        self.args.command, self.args.kiosk, self.args.elevate_mode = 'setup', True, mode
+        self.args.dashboard = 'https://dashboard.example.invalid/'
+        self.tool.inspect = Mock()
+        self.tool.adb = Mock()
+        self.tool.adb.shell.side_effect = lambda command, **kwargs: {
+            'out': ('package:' + x.FULLY + '\n') if existing_fully and command.startswith('pm list packages --user') else 'test', 'code': 0}
+        self.tool.root = Mock(side_effect=lambda command, **kwargs: {
+            'out': 'uid=0(root)' if command == 'id' else '30.7', 'code': 0})
+        parts = self.tool.folder / 'components'
+        parts.mkdir()
+        self.tool.components = Mock(return_value=parts)
+        elevate, launcher, fully = [self.tool.folder / name for name in ('elevate.apk', 'launcher.apk', 'fully.apk')]
+        for path in (elevate, launcher, fully):
+            path.write_bytes(b'test')
+        if mode == 'lite':
+            self.args.fully_apk = str(fully)
+        self.tool.download = Mock(side_effect=lambda key: {'elevate': elevate, 'launcher': launcher}[key])
+        for name in ('install', 'prefs', 'upload_root', 'wait_boot', 'finish'):
+            setattr(self.tool, name, Mock())
+        with patch.object(x, 'confirmed') as confirm, patch.object(x, 'FULLY_SHA', x.sha(fully)):
+            self.tool.setup()
+        confirm.assert_called_once_with('SETUP', SERIAL)
+        self.assertEqual(self.tool.state['elevate_mode'], mode)
+        self.assertTrue(self.tool.state['module_staged'])
+        self.tool.adb.reboot.assert_called_once_with()
+        return elevate, launcher, fully
+
+    def test_lite_setup_installs_fully_and_configures_supplied_url(self):
+        elevate, launcher, fully = self.mock_setup('lite')
+        self.assertEqual([call.args[0] for call in self.tool.install.call_args_list], [elevate, launcher, fully])
+        changes = {call.args[0]: call.args[2] for call in self.tool.prefs.call_args_list}
+        self.assertTrue(changes[x.ELEVATE]['liteMode'])
+        self.assertEqual(changes[x.FULLY]['startURL'], self.args.dashboard)
+        self.assertTrue(changes[x.FULLY]['launchOnBoot'])
+
+    def test_full_setup_neither_installs_nor_starts_fully(self):
+        elevate, launcher, _ = self.mock_setup('full')
+        self.assertEqual([call.args[0] for call in self.tool.install.call_args_list], [elevate, launcher])
+        changes = {call.args[0]: call.args[2] for call in self.tool.prefs.call_args_list}
+        self.assertEqual(set(changes), {x.ELEVATE})
+        self.assertFalse(changes[x.ELEVATE]['liteMode'])
+        self.assertEqual(changes[x.ELEVATE]['webviewUrl'], self.args.dashboard)
+        commands = [call.args[0] for call in self.tool.adb.shell.call_args_list]
+        self.assertIn('am start -W -n ' + x.ELEVATE + '/.MainActivity', commands)
+        self.assertFalse(any('am start' in command and x.FULLY in command for command in commands))
+
+    def test_full_setup_disables_only_existing_fully_autostart(self):
+        self.mock_setup('full', existing_fully=True)
+        self.tool.prefs.assert_any_call(x.FULLY, 'de.ozerov.fully_preferences.xml', {'launchOnBoot': False})
+
+    def test_finish_launches_selected_display_then_checks_reboot(self):
+        self.tool.state.update(module_staged=True, elevate_mode='full')
+        self.tool.inspect, self.tool.root, self.tool.adb = Mock(), Mock(return_value={'out': 'uid=0(root)'}), Mock()
+        self.tool.adb.shell.side_effect = lambda command, **kwargs: {
+            'out': (' flags=[ SYSTEM ]\n privateFlags=[ PRIVILEGED ]' if command.startswith('dumpsys package') else
+                    x.HOME if command.startswith('cmd package resolve-activity') else 'before-boot')}
+        self.tool.wait_boot, self.tool.wait_kiosk, self.tool.verify = Mock(), Mock(), Mock()
+        self.tool.finish()
+        commands = [call.args[0] for call in self.tool.adb.shell.call_args_list]
+        self.assertIn('am start -W -n ' + x.ELEVATE + '/.MainActivity', commands)
+        self.assertFalse(any(x.FULLY in command for command in commands))
+        self.tool.root.assert_any_call('cmd package set-home-activity --user 0 ' + x.HOME)
+        self.tool.wait_boot.assert_called_once_with(previous='before-boot')
+        self.tool.wait_kiosk.assert_called_once_with()
+        self.tool.verify.assert_called_once_with()
+
+    def test_verification_accepts_only_selected_foreground(self):
+        self.tool.inspect = Mock(return_value={'sys.boot_completed': '1'})
+        self.tool.root = Mock(return_value={'out': 'uid=0(root)'})
+        self.tool.adb = Mock()
+        for mode in ('lite', 'full'):
+            for correct in (False, True):
+                with self.subTest(mode=mode, correct=correct):
+                    self.tool.state = {'serial': SERIAL, 'module_staged': True, 'elevate_mode': mode,
+                                       'verification_before_boot_id': 'old-boot'}
+                    activity = self.tool.kiosk_activity() if correct else 'other.package/.MainActivity'
+                    def shell(command, **kwargs):
+                        if command.startswith('dumpsys package'):
+                            return {'out': ' flags=[ SYSTEM ]\n privateFlags=[ PRIVILEGED ]'}
+                        if 'mResumedActivity' in command:
+                            return {'out': activity}
+                        if command.startswith('dumpsys activity services'):
+                            return {'out': 'ServiceRecord{test}'}
+                        if command.startswith('cmd package resolve-activity'):
+                            return {'out': x.HOME + '\n'}
+                        if command == 'pm path l.l':
+                            return {'out': 'package:/data/app/test/base.apk\n'}
+                        return {'out': 'new-boot'}
+                    self.tool.adb.shell.side_effect = shell
+                    if correct:
+                        self.tool.verify()
+                        self.assertTrue(self.tool.state['complete'])
+                    else:
+                        with self.assertRaisesRegex(x.Stop, 'not foreground'):
+                            self.tool.verify()
+                        self.assertNotIn('complete', self.tool.state)
+                    self.assertFalse(any(call.args[0].startswith('am start') for call in self.tool.adb.shell.call_args_list))
+
+    def test_finish_requires_default_home_even_without_owner_override(self):
+        self.tool.state.update(module_staged=True, elevate_mode='full', remove_stock=False)
+        self.tool.inspect, self.tool.root, self.tool.adb = Mock(), Mock(return_value={'out': 'uid=0(root)'}), Mock()
+        self.tool.adb.shell.return_value = {'out': ' flags=[ SYSTEM ]\n privateFlags=[ PRIVILEGED ]'}
+        with self.assertRaisesRegex(x.Stop, 'Default HOME was not set'):
+            self.tool.finish()
+        self.tool.adb.reboot.assert_not_called()
+        self.tool.root.assert_any_call('cmd package set-home-activity --user 0 ' + x.HOME)
+
+    def test_verification_requires_installed_default_launcher_without_owner_override(self):
+        self.tool.inspect = Mock(return_value={'sys.boot_completed': '1'})
+        self.tool.root = Mock(return_value={'out': 'uid=0(root)'})
+        self.tool.adb = Mock()
+        for home, installed, error in [('wrong/.Home', True, 'Unexpected HOME'), (x.HOME, False, 'not installed')]:
+            with self.subTest(home=home, installed=installed):
+                self.tool.state = {'serial': SERIAL, 'module_staged': True, 'elevate_mode': 'full',
+                                   'remove_stock': False, 'verification_before_boot_id': 'old-boot'}
+                replies = {
+                    'dumpsys package ' + x.ELEVATE: ' flags=[ SYSTEM ]\n privateFlags=[ PRIVILEGED ]',
+                    'dumpsys activity activities | grep mResumedActivity': x.ELEVATE + '/.MainActivity',
+                    'dumpsys activity services ' + x.ELEVATE: 'ServiceRecord{test}',
+                    'cmd package resolve-activity --brief -a android.intent.action.MAIN -c android.intent.category.HOME': home,
+                    'pm path l.l': 'package:/data/app/test/base.apk' if installed else ''}
+                self.tool.adb.shell.side_effect = lambda command, **kwargs: {'out': replies.get(command, 'new-boot')}
+                with self.assertRaisesRegex(x.Stop, error):
+                    self.tool.verify()
+                self.assertNotIn('complete', self.tool.state)
 
     def test_confirmation_requires_interactive_stdin(self):
         with patch.object(x.sys.stdin, 'isatty', return_value=False), patch('builtins.input') as prompt, self.assertRaises(x.Stop):
